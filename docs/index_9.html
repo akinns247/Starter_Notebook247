@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Does Historical Search Data Predict Which Pages Need a Refresh? | Akinniyi Vincent Ayomide</title>
+<meta name="description" content="A grouped-validation case study on FlyRank search & engagement data: can historical signals rank pages for content refresh review?" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <a href="https://vincent-akinniyi-portfolio.netlify.app/">← Portfolio</a>
+    <a href="https://github.com/akinns247/Starter_Notebook247">Repo & notebooks ↗</a>
+  </div>
+</header>
+
+<main>
+  <div class="wrap paper-hero">
+    <p class="eyebrow">Research Paper · Machine Learning Track · FlyRank AI Fluency Program</p>
+    <h1 class="title">Does Historical Search &amp; Engagement Data Predict Which Pages Need a Content Refresh?</h1>
+    <p class="byline">Akinniyi Vincent Ayomide · <a href="https://www.linkedin.com/in/vincent-akinniyi-5543b73a1">LinkedIn</a> · <a href="https://github.com/akinns247">GitHub</a></p>
+
+    <div class="abstract-panel">
+      <div class="abstract-label">0. Abstract</div>
+      <p>
+        Can historical search and engagement signals identify which pages most need a content
+        refresh, before a human reviews them? Using a 27,532-row working sample drawn from
+        FlyRank's production search-and-engagement warehouse (78.8 million daily fact rows
+        across 104 pseudonymized clients), I built a grouped-by-client Random Forest classifier
+        and compared it against a simple rule-based baseline on an identical, client-disjoint
+        held-out split. The model showed a modest but real improvement in ranking quality
+        (ROC-AUC 0.568 vs. 0.344; Precision@20 0.05 vs. a 0.030 base rate), while its recall was
+        actually <em>lower</em> than the simpler rule (0.265 vs. 0.488) — a genuine trade-off,
+        not a clean win. The practical takeaway: the ranking carries a real but narrow signal,
+        concentrated at the very top of the queue, intended as decision-support for a human
+        content reviewer — not an automated publishing system.
+      </p>
+    </div>
+  </div>
+
+  <div class="pulse-divider" aria-hidden="true">
+    <svg viewBox="0 0 400 20" preserveAspectRatio="none"><path d="M0,10 L160,10 L172,2 L184,18 L196,10 L400,10" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+
+  <div class="wrap">
+
+    <section class="paper-section" id="problem-framing">
+      <p class="section-number">1</p>
+      <h2>Problem Framing</h2>
+      <p>
+        <strong>Unit of analysis:</strong> one content page, in one calendar month.
+        <strong>Output:</strong> a priority score and rank for that page, plus a plain-words
+        reason code. <strong>Action a human takes:</strong> a content reviewer opens the
+        highest-ranked pages first and decides, page by page, whether a refresh is warranted.
+      </p>
+      <p>
+        <strong>Cost of a wrong call:</strong> a false positive (the model flags a page that
+        didn't need attention) costs a reviewer a few wasted minutes of inspection. A false
+        negative (a page that genuinely needed a refresh gets buried in the queue) costs the
+        client organic traffic and ranking for longer than necessary — a more expensive mistake.
+        That asymmetry is why recall, not just precision, matters throughout this paper.
+      </p>
+      <p>
+        Content teams manage far more pages than they can manually review in a given month.
+        Sorted alphabetically or by publish date, that list carries no information about which
+        pages are actually losing ground in search. Historical signals already sitting in the
+        data — CTR, ranking position, traffic trend, engagement — are a plausible, cheap way to
+        produce a better ordering than the default list. This paper tests how much better, and
+        is explicit about where that ordering breaks down.
+      </p>
+    </section>
+
+    <section class="paper-section" id="data-safety">
+      <p class="section-number">2</p>
+      <h2>Data Safety</h2>
+      <p>
+        <strong>Source:</strong> the FlyRank ML Internship dataset — 78,835,655 daily fact rows,
+        104 pseudonymized clients, 519,606 pseudonymized content items. All client and content
+        identifiers are pseudonymized at the source.
+      </p>
+      <p>
+        <strong>Working sample:</strong> one row per content item per month, sliced to March
+        2026 (a mid-panel month — the most recent days in this release are intentionally
+        incomplete). After dropping rows missing core fields, the working sample is
+        <strong>27,532 rows</strong>: 21,884 training rows (24 clients), 5,648 test rows
+        (7 clients), zero client overlap.
+      </p>
+      <p><strong>Deliberately excluded, and why:</strong></p>
+      <ul>
+        <li>Any future or post-refresh performance metric — including this would leak the
+          outcome the model is trying to predict before the fact.</li>
+        <li>Rows missing client ID, CTR, average position, trend direction, or search volume,
+          rather than imputing a decision-relevant signal.</li>
+      </ul>
+      <p><strong>Leakage risks considered:</strong> the proxy label is built directly from
+        <code>ctr</code>, <code>trend_direction</code>, and <code>avg_position</code>. None of
+        these three columns — nor <code>trend_pct</code> — appear in the model's feature list;
+        only the 8 numeric and 3 categorical features below were used to predict the label those
+        three columns define. <code>client_id</code> and <code>content_id</code> are used only
+        for the grouped split, never as model features.</p>
+      <p><strong>Client-identifying details:</strong> none appear anywhere in this paper, the
+        capstone notebook, or the repository — all IDs are the dataset's own pseudonymized
+        values.</p>
+    </section>
+
+    <section class="paper-section" id="baseline">
+      <p class="section-number">3</p>
+      <h2>Baseline</h2>
+      <p>
+        The comparison point is the Week-4 rule-based baseline: a simple, transparent
+        prioritization rule built from the same signal family (low CTR, declining trend, weak
+        position) used before any model was introduced — a fair comparison because it uses the
+        same underlying signals, just combined by hand instead of learned. Its metrics below are
+        as recorded in the internship's own validation notebook, evaluated on the identical
+        client-disjoint split used for the model.
+      </p>
+    </section>
+
+    <section class="paper-section" id="model-analysis">
+      <p class="section-number">4</p>
+      <h2>Model / Analysis</h2>
+      <p>
+        <strong>Method:</strong> Random Forest classifier — chosen for its ability to capture
+        non-linear interactions between signals (e.g. "low CTR only matters combined with high
+        search volume") without heavy feature engineering, and for producing a continuous score
+        suitable for ranking rather than only a hard yes/no.
+      </p>
+      <p>
+        <strong>Features used (11):</strong> search volume, competition, CPC, word count,
+        character count, engagement rate, scroll rate, AI-referral traffic share (numeric);
+        content type, main search intent, competition level (categorical) — all knowable at the
+        point a reviewer would look at the page.
+      </p>
+      <p>
+        <strong>Left out on purpose:</strong> <code>ctr</code>, <code>trend_direction</code>,
+        <code>trend_pct</code>, <code>avg_position</code> (label-derived — see Data Safety),
+        and both ID columns (used only for grouping).
+      </p>
+      <p>
+        <strong>Target, in one sentence:</strong> <code>needs_refresh</code> = 1 if CTR ≤ 25th
+        percentile <em>and</em> trend is declining <em>and</em> avg. position ≥ 75th percentile
+        — a proxy for editorial priority, not a verified outcome, with thresholds computed on
+        the training split only.
+      </p>
+    </section>
+
+    <section class="paper-section" id="evaluation">
+      <p class="section-number">5</p>
+      <h2>Evaluation</h2>
+      <p>
+        <strong>Split:</strong> client-grouped (<code>GroupShuffleSplit</code>, 80/20) — no
+        client's pages appear in both train and test, a harder and more honest test than a
+        random row-level split. <strong>Base rate:</strong> 3.0% of the 5,648 test rows are
+        proxy-positive — reported here because a high raw score can otherwise just reflect a
+        high (or low) base rate rather than real skill.
+      </p>
+
+      <table>
+        <tr><th>Metric</th><th>Week-4 baseline</th><th>Random Forest</th></tr>
+        <tr><td>Precision@20 <span class="footnote">(base rate 0.030)</span></td><td class="num">0.00</td><td class="num">0.05</td></tr>
+        <tr><td>Precision</td><td class="num">0.0237</td><td class="num">0.0358</td></tr>
+        <tr class="highlight"><td>Recall</td><td class="num">0.4882</td><td class="num">0.2647</td></tr>
+        <tr><td>F1</td><td class="num">0.0453</td><td class="num">0.0630</td></tr>
+        <tr class="highlight"><td>ROC-AUC</td><td class="num">0.3439</td><td class="num">0.5682</td></tr>
+      </table>
+
+      <figure>
+        <img src="img/chart_metrics_comparison.png" alt="Bar chart comparing baseline and Random Forest across five metrics" />
+        <figcaption>The Random Forest wins on ranking quality (ROC-AUC, Precision@20) but the baseline actually catches more true positives (Recall 0.49 vs. 0.26) — a real trade-off, not a clean win in every column.</figcaption>
+      </figure>
+
+      <figure>
+        <img src="img/chart_roc_curve.png" alt="ROC curve for the Random Forest model" />
+        <figcaption>ROC-AUC of 0.568 sits modestly above the random-guess line (0.500) — a real but narrow separation between the two classes.</figcaption>
+      </figure>
+
+      <figure>
+        <img src="img/chart_precision_at_k.png" alt="Precision at k chart showing ranking quality as more pages are reviewed" />
+        <figcaption>The signal is concentrated at the very top of the queue: precision is highest in the first ~50 ranked pages, then decays toward the base rate by k≈100.</figcaption>
+      </figure>
+
+      <h3>What the errors actually look like</h3>
+      <p>
+        1,213 false positives and 125 false negatives on the test set. Two patterns stand out
+        more than the summary metrics show:
+      </p>
+      <ul>
+        <li><strong>False positives cluster on zero-engagement, zero-CTR pages with a "stable"
+          or "new" trend</strong> — the model reads near-zero engagement as a strong refresh
+          signal even when the trend itself isn't declining, likely over-weighting
+          <code>engagement_rate</code> in isolation.</li>
+        <li><strong>False negatives cluster on genuinely declining pages the model scored very
+          low</strong> (as low as 0.011–0.022) despite a real downward trend — cases where
+          engagement and scroll depth looked locally fine even as the page's search performance
+          was actually deteriorating. This is the costlier error class given Section 1.</li>
+      </ul>
+    </section>
+
+    <section class="paper-section" id="interpretation">
+      <p class="section-number">6</p>
+      <h2>Interpretation</h2>
+      <p>
+        Permutation importance (drop in ROC-AUC when a feature is shuffled) on the held-out set:
+      </p>
+      <table>
+        <tr><th>Feature</th><th>Importance</th></tr>
+        <tr><td>engagement_rate</td><td class="num">0.0313</td></tr>
+        <tr><td>scroll_rate</td><td class="num">0.0240</td></tr>
+        <tr><td>char_count</td><td class="num">0.0210</td></tr>
+        <tr><td>word_count</td><td class="num">0.0107</td></tr>
+        <tr><td>competition</td><td class="num">0.0071</td></tr>
+        <tr><td>competition_level</td><td class="num">0.0041</td></tr>
+        <tr><td>content_type</td><td class="num">0.0000</td></tr>
+        <tr><td>main_intent</td><td class="num">−0.0016</td></tr>
+      </table>
+      <p>
+        In plain words: <strong>engagement and scroll depth carry most of the model's usable
+        signal</strong>, with page length a distant third. <strong>Content type and main search
+        intent add essentially nothing</strong> — content_type's importance is exactly zero and
+        main_intent is slightly negative, meaning the model would do just as well, or fractionally
+        better, without them. This is a legitimate negative result worth stating plainly rather
+        than hiding: two of the eleven features earn their place in the model on faith, not
+        evidence, in this backtest.
+      </p>
+      <p>
+        No single feature dominates — even the top feature's importance (0.031) is small in
+        absolute terms, consistent with the overall weak-but-real signal shown by the 0.568
+        ROC-AUC. This is a sanity check that the model is discriminating on genuine engagement
+        signal rather than an accidental artifact.
+      </p>
+    </section>
+
+    <section class="paper-section" id="recommendation">
+      <p class="section-number">7</p>
+      <h2>Recommendation</h2>
+      <p>
+        The model's score was used to build a ranked, reason-coded action queue for human review
+        (full methodology and code in <code>ML-10</code>). Every recommendation carries a reason
+        code describing which observable signals were present — never a claim that the page
+        definitely needs a refresh.
+      </p>
+      <table>
+        <tr><th>Reason code</th><th>Count (of 5,648)</th></tr>
+        <tr><td>COMBINED_OPPORTUNITY</td><td class="num rec-count">2,799</td></tr>
+        <tr><td>LOW_CTR</td><td class="num rec-count">859</td></tr>
+        <tr><td>DECLINING_TREND</td><td class="num rec-count">814</td></tr>
+        <tr><td>MODEL_SIGNAL_ONLY</td><td class="num rec-count">681</td></tr>
+        <tr><td>HIGH_SEARCH_OPPORTUNITY</td><td class="num rec-count">289</td></tr>
+        <tr><td>POOR_POSITION</td><td class="num rec-count">206</td></tr>
+      </table>
+      <p>
+        <strong>How a FlyRank editor would use this tomorrow:</strong> open the queue, start at
+        rank 1, and treat the first ~50 rows as the highest-value use of limited review time —
+        that's where Section 5's precision-at-k curve shows the real signal concentrates. Rows
+        past k≈100 are barely better than picking at random from the base rate.
+      </p>
+      <div class="callout">
+        <strong>Confidence and limits, stated explicitly:</strong> this is a narrow, directional
+        signal (ROC-AUC 0.568), not a reliable classifier. Never auto-publish, auto-delete,
+        auto-redirect, or auto-edit claims from this queue alone. A page in a lower tier is not
+        confirmation that it's fine — recall is only 0.265, and Section 5's error analysis shows
+        real declining pages the model misses.
+      </div>
+    </section>
+
+    <section class="paper-section" id="reproducibility">
+      <p class="section-number">8</p>
+      <h2>Reproducibility</h2>
+      <p>Every number on this page can be re-run from a fresh clone:</p>
+      <pre class="code-block">git clone https://github.com/akinns247/Starter_Notebook247.git
+cd Starter_Notebook247
+pip install -r requirements.txt
+jupyter nbconvert --to notebook --execute --inplace work/notebooks/capstone.ipynb</pre>
+      <p>
+        <strong>Random seed:</strong> <code>random_state=42</code>, fixed throughout for the
+        train/test split and the model. <strong>Sealed evaluation:</strong> the test-set metrics
+        above are produced once per run by <code>capstone.ipynb</code> and written to
+        <code>work/outputs/capstone_metrics.json</code> — that file, not this page, is the
+        source of truth; re-running the notebook regenerates it and this page's numbers should
+        match it exactly.
+      </p>
+      <ul>
+        <li><a href="https://github.com/akinns247/Starter_Notebook247">Full repository</a></li>
+        <li><a href="https://github.com/akinns247/Starter_Notebook247/blob/main/work/notebooks/capstone.ipynb">Capstone notebook</a> — mirrors this paper section by section</li>
+        <li><a href="https://github.com/akinns247/Starter_Notebook247/blob/main/work/notebooks/w05_model.ipynb">Model training notebook</a></li>
+        <li><a href="https://github.com/akinns247/Starter_Notebook247/blob/main/work/notebooks/w06_validation_audit.ipynb">Grouped validation &amp; leakage audit</a></li>
+        <li><a href="https://github.com/akinns247/Starter_Notebook247/blob/main/work/notebooks/w07_action_playbook.ipynb">Content action playbook (ML-10)</a></li>
+        <li><a href="https://github.com/akinns247/Starter_Notebook247/blob/main/work/capstone_report.md">Full written capstone report</a></li>
+      </ul>
+    </section>
+
+  </div>
+
+  <div class="pulse-divider" aria-hidden="true">
+    <svg viewBox="0 0 400 20" preserveAspectRatio="none"><path d="M0,10 L160,10 L172,2 L184,18 L196,10 L400,10" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+
+  <div class="wrap">
+    <section class="paper-section" id="acknowledgments">
+      <p class="section-number">9</p>
+      <h2>Acknowledgments &amp; Data Credit</h2>
+      <p>
+        Built on the FlyRank ML Internship dataset —
+        <a href="https://flyrank.ai" target="_blank" rel="noopener">flyrank.ai</a>. Thank you to
+        the FlyRank AI Fluency Program and my ML mentor for the structure, the real data, and the
+        honest-claims standard this paper was held to throughout.
+      </p>
+    </section>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    Akinniyi Vincent Ayomide — AI &amp; Machine Learning Intern, FlyRank AI Fluency Program ·
+    <a href="https://vincent-akinniyi-portfolio.netlify.app/">Portfolio</a>
+  </div>
+</footer>
+
+</body>
+</html>
